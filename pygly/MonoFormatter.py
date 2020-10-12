@@ -4,6 +4,8 @@ from ConstantsTable import ConstantsTable
 from Monosaccharide import Monosaccharide, Substituent, Linkage, Config
 import re
 import sys
+# Cautious: may cause circular import
+import Glycan
 
 class GlycoCTMonoFormat:
     def __init__(self):
@@ -65,7 +67,7 @@ class GlycoCTMonoFormat:
         else:
             s += self.fromSym[('Linkage',Linkage.missing)]
         return s
-    fromStrRE = re.compile(r'^(\d+)([bs]):(.*)$')
+    fromStrRE = re.compile(r'^(\d+)([bsr]):(.*)$')
     def fromStr(self,mstr):
         m = self.fromStrRE.search(mstr.strip())
         if not m:
@@ -128,12 +130,17 @@ class GlycoCTMonoFormat:
             m.add_mod(num,modi)
         return m
 
-    linkFromStrRE = re.compile(r'^(\d+):(\d+)([dnohx])[(](.+)\+(.+)[)](\d+)([dnohx])$')
+    linkFromStrRE = re.compile(r'^(\d+|r):(\d+)([dnohx])[(](.+)\+(.+)[)](\d+)([dnohx])$')
     def linkFromStr(self,s,res):
+        # Maybe modulize it a little bit?
         m = self.linkFromStrRE.search(s)
         if not m:
             raise RuntimeError("Bad GlycoCT link line:"+s)
-        id = int(m.group(1))
+        if m.group(1) == "r":
+            id = "r"
+        else:
+            id = int(m.group(1))
+
         parentid = int(m.group(2))
         parenttype = self.toSym[('Linkage',m.group(3))]
         parentpos2 = None
@@ -151,17 +158,25 @@ class GlycoCTMonoFormat:
             childpos = None
         childid = int(m.group(6))
         childtype = self.toSym[('Linkage',m.group(7))]
-        if parentid not in res:
-            raise RuntimeError("Bad GlycoCT link line, parent missing:"+s)
-        if childid not in res:
-            raise RuntimeError("Bad GlycoCT link line, child missing:"+s)
-        if parentid >= childid:
-            raise RuntimeError("Bad GlycoCT link line, backwards link:"+s)
+        if id != "r":
+            if parentid not in res:
+                raise RuntimeError("Bad GlycoCT link line, parent missing:"+s)
+            if childid not in res:
+                raise RuntimeError("Bad GlycoCT link line, child missing:"+s)
+            if parentid >= childid:
+                raise RuntimeError("Bad GlycoCT link line, backwards link:"+s)
+        else:
+            l = Linkage(None,
+                        parent_type=parenttype,
+                        parent_pos=parentpos,
+                        child_type=childtype,
+                        child_pos=childpos)
+            return l, parentid, childid
         parent = res[parentid]
         #if isinstance(parent, Substituent):
         #    raise RuntimeError("Bad GlycoCT link line, substituent as parent:"+s)
         child = res[childid]
-        if isinstance(child,Monosaccharide):
+        if isinstance(child,Monosaccharide) or isinstance(child, Glycan.RepeatedUnit):
             l = parent.add_child(child,
                                  parent_type=parenttype,
                                  parent_pos=parentpos,

@@ -113,6 +113,24 @@ class Node(object):
     def children(self):
         return [l.child() for l in self.links()]
 
+    def descendants(self, subst=False):
+        todo = [self]
+        seen = set()
+        while len(todo) > 0:
+            m = todo.pop(0)
+            if m not in seen:
+                seen.add(m)
+                yield m
+
+            if subst:
+                for s in m.substituents():
+                    if s not in seen:
+                        seen.add(s)
+                        yield s
+
+            for c in reversed(m.children()):
+                todo.insert(0, c)
+
     def first_child(self):
         for l in self.links():
             return l.child()

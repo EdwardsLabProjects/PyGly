@@ -5,6 +5,7 @@ import operator
 import sys
 import time
 import copy
+import alignment
 from collections import defaultdict
 
 try:
@@ -53,10 +54,20 @@ class Glycan:
     def set_ids(self):
         for i,m in enumerate(self.all_nodes(subst=True)):
             m.set_id(i+1)
+        if self.has_repeats():
+            i += 2
+            for ru in self.repeat_units():
+                for n in ru.all_nodes(subst=True):
+                    n.set_id(i)
+                    i+=1
 
     def unset_ids(self):
         for m in self.all_nodes(subst=True):
             m.unset_id()
+        if self.has_repeats():
+            for ru in self.repeat_units():
+                for n in ru.all_nodes(subst=True):
+                    n.unset_id()
 
     def set_undetermined(self, und):
         if und == None or len(und) == 0:
@@ -743,6 +754,350 @@ class Glycan:
                 self.dump(c,level, '', monofmt)
         elif len(child_list) == 1:
             self.dump(child_list[0],level,br,monofmt)
+
+
+    def has_repeats(self):
+        for r in self.repeat_units():
+            return True
+        return False
+
+
+    def repeat_units(self):
+
+        for n in self.all_nodes():
+            if isinstance(n, RepeatedUnit):
+                yield n
+
+
+    def extend_repeat_unit(self, ru, n):
+        assert isinstance(n, int)
+        assert n >= 1
+
+        ru_root, ru_end = ru.extend(n)
+        assert len(ru.parent_links()) in [0, 1]
+        if len(ru.parent_links()) == 0:
+            assert ru == self.root()
+            self.set_root(ru_root)
+        elif len(ru.parent_links()) == 1:
+            ru.parent_links()[0].set_child(ru_root)
+
+        for cl in ru.links():
+            cl.set_parent(ru_end)
+            ru_end.add_link(cl)
+
+
+    def canonicalization(self):
+        # TODO not finished yet
+        res = False
+        for ru in self.repeat_units():
+            if ru.canonicalization():
+                res = True
+        return res
+
+
+
+class RepeatedUnit:
+
+    def __init__(self, root, loopend, l):
+
+        self._id = None
+        self._connected = True
+
+        self._links = []
+        self._parent_links = []
+
+        self._range = (None, None)
+
+        self.setroot(root)
+        self.setloopend(loopend)
+        self.setrepeatlinkage(l)
+
+        self.gequal = alignment.GlycanEqual()
+        # self.canonicalization()
+
+    def __len__(self):
+        res = 0
+        todiscover = [self.root()]
+
+        while len(todiscover) > 0:
+            res += 1
+            m = todiscover.pop()
+
+            for c in m.children():
+                todiscover.append(c)
+
+        return res
+
+    def id(self):
+        return self._id
+
+    def set_id(self,id):
+        self._id = id
+
+    def unset_id(self):
+        self._id = None
+
+    def root(self):
+        return self._root
+
+    def setroot(self, r):
+        self._root = r
+
+    def loopend(self):
+        return self._loopend
+
+    def setloopend(self, loopend):
+        self._loopend = loopend
+
+    def repeatlinkage(self):
+        return self._repeatlinkage
+
+    def setrepeatlinkage(self, l):
+        self._repeatlinkage = l
+
+    def is_monosaccharide(self):
+        return False
+
+    def substituents(self):
+        return []
+
+    def substituent_links(self):
+        return []
+
+    def range(self):
+        return self._range
+
+    def setrange(self, r):
+        # expect tuple (None, None) or (17, 31)
+        self._range = r
+
+    def rangeplus(self, n):
+        if None in self._range:
+            return
+        else:
+            self._range = (self._range[0]+n, self._range[1]+n)
+
+    def rangemultiply(self, n):
+        if None in self._range:
+            return
+        else:
+            self._range = (self._range[0]*n, self._range[1]*n)
+
+    def links(self, instantiated_only=False):
+        # TODO Not supporting undetermined yet
+        return self._links
+
+    def add_link(self, l):
+        self._links.append(l)
+
+    def del_link(self, l):
+        self._links.remove(l)
+
+    def clear_links(self):
+        self._links = []
+
+    def parent_links(self):
+        return self._parent_links
+
+    def add_parent_link(self, l):
+        self._parent_links.append(l)
+
+    def del_parent_link(self, l):
+        self._parent_links.remove(l)
+
+    def set_connected(self,conn):
+        self._connected = conn
+
+    def connected(self):
+        return self._connected
+
+    def clear_parent_links(self):
+        self._parent_links = []
+
+    def add_child(self, m, **kw):
+        l = Linkage(child=m,**kw)
+        self.add_link(l)
+        l.set_parent(self)
+        m.add_parent_link(l)
+        return l
+
+    def children(self):
+        return [l.child() for l in self.links()]
+
+    def all_nodes(self, subst=True):
+        for n in self._root.descendants(subst=subst):
+            yield n
+
+    def clonetree(self):
+
+        for i, d in enumerate(self._root.descendants(subst=True)):
+            d.set_id(i)
+        tmp = self._loopend.id()
+
+        root_copy = self.root().deepclone()
+
+        loopend_candidates = filter(lambda node: node.id() == tmp, root_copy.descendants())
+        assert len(loopend_candidates) == 1
+        loopend_copy = loopend_candidates[0]
+
+        return root_copy, loopend_copy
+
+
+    def clone(self):
+        root_copy, loopend_copy = self.clonetree()
+
+        res = RepeatedUnit(root_copy, loopend_copy, self.repeatlinkage())
+        res.set_id(self.id())
+        return res
+
+
+    deepclone = Monosaccharide.__dict__["deepclone"]
+
+
+    def export(self):
+        g = Glycan(self.root())
+        return g
+
+    def extend(self, n):
+        assert type(n) == int
+        assert n >= 1
+
+        res_loop_root, res_loop_end = self.clonetree()
+
+        for i in range(n-1):
+            new_unit_loop_root, new_unit_loop_end = self.clonetree()
+
+            link = copy.deepcopy(self.repeatlinkage())
+            link.set_parent(res_loop_end)
+            link.set_child(new_unit_loop_root)
+
+            res_loop_end.add_link(link)
+            new_unit_loop_root.add_parent_link(link)
+
+            res_loop_end = new_unit_loop_end
+
+        return res_loop_root, res_loop_end
+
+    def extend_to_glycan(self, n):
+        r, e = self.extend(n)
+        return Glycan(r)
+
+
+    def connectedNodesPlusOne(self, currentSet):
+        res = []
+        for n in currentSet:
+            res += [x.child() for x in n.links(instantiated_only=False)]
+        children = filter(lambda x:x not in currentSet, res)
+        children = set(children)
+
+        res = []
+        for n in children:
+            res0 = currentSet.copy()
+            res0.add(n)
+            res.append(res0)
+
+        return res
+
+    def mainchain(self):
+        res = [self.root()]
+        seen = {self.root()}
+        while True:
+            if res[-1] == self.loopend():
+                break
+
+            children = res[-1].children()
+
+            if len(children) == 0:
+                res.pop(-1)
+            else:
+                skip = False
+                for c in children:
+                    if c not in seen:
+                        seen.add(c)
+                        res.append(c)
+                        skip = True
+                        break
+
+                if not skip:
+                    res.pop(-1)
+
+        return res
+
+    def subunit(self):
+
+        mainchain = self.mainchain()
+        mainchain_size = len(mainchain)
+
+        if mainchain_size == 1:
+            raise StopIteration
+
+        repeat_size = self.__len__()
+
+        for i, new_loopend in enumerate(mainchain):
+            new_mainchain_size = i+1
+
+            if new_mainchain_size == mainchain_size:
+                raise StopIteration
+
+            if mainchain_size % new_mainchain_size != 0:
+                continue
+
+            todiscover = [self.root()]
+            new_repeat_size = 0
+            while len(todiscover) > 0:
+                m = todiscover.pop(0)
+                new_repeat_size += 1
+                children = m.children()
+                if m == new_loopend:
+                    todiscover += filter(lambda x:x not in mainchain, children)
+                else:
+                    todiscover += children
+
+            if repeat_size % new_repeat_size != 0:
+                continue
+
+            if mainchain_size / new_mainchain_size != repeat_size / new_repeat_size:
+                continue
+
+            # print(new_mainchain_size, mainchain_size, new_repeat_size, repeat_size )
+
+            for i, d in enumerate(self.root().descendants(subst=True)):
+                d.set_id(i)
+            mainchain_ids = map(lambda x: x.id(), mainchain)
+
+            new_loopend_id = new_loopend.id()
+            res_root = self.root().deepclone()
+
+            loopend_candidates = filter(lambda node: node.id() == new_loopend_id, res_root.descendants())
+            assert len(loopend_candidates) == 1
+            res_loopend = loopend_candidates[0]
+            for l in res_loopend.links():
+                if l.child().id() in mainchain_ids:
+                    res_loopend.del_link(l)
+
+            yield RepeatedUnit(res_root, res_loopend, self.repeatlinkage())
+
+
+
+    def canonicalization(self):
+        repeat_size = self.__len__()
+        for new_possible_repeat_unit in self.subunit():
+            newg = new_possible_repeat_unit.extend_to_glycan(repeat_size/len(new_possible_repeat_unit))
+            if self.gequal.eq(newg, self.export()):
+                self.setroot(new_possible_repeat_unit.root())
+                self.setloopend(new_possible_repeat_unit.loopend())
+                self.setrepeatlinkage(new_possible_repeat_unit.repeatlinkage())
+
+                return True
+
+            # new_possible_repeat_unit.extend_to_glycan(repeat_times)
+        return False
+
+
+
+
+
+
 
 if __name__ == '__main__':
 

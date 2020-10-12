@@ -3,7 +3,7 @@ from __future__ import print_function
 
 from MonoFormatter import GlycoCTMonoFormat, LinCodeSym, LinCodeRank, IUPACSym, GlycamSym
 from Monosaccharide import Monosaccharide, Linkage, Anomer, Substituent, Mod
-from Glycan import Glycan
+from Glycan import Glycan, RepeatedUnit
 from MonoFactory import MonoFactory
 
 import re, sys, traceback
@@ -43,6 +43,10 @@ class GlycoCTUNDBeforeRESLINError(GlycoCTParseError):
     def __init__(self,lineno):
         self.message = "GlycoCT parser, line %d: UND section before RES or LIN section"%(lineno,)
 
+class GlycoCTREPBeforeRESLINError(GlycoCTParseError):
+    def __init__(self,lineno):
+        self.message = "GlycoCT parser, line %d: REP section before RES or LIN section"%(lineno,)
+
 class GlycoCTUnsupportedSectionError(GlycoCTParseError):
     def __init__(self,section,lineno):
         self.section = section
@@ -75,6 +79,10 @@ class GlycoCTUndeterminedLinkageError(GlycoCTParseError):
 class GlycoCTUnconnectedCountError(GlycoCTParseError):
     def __init__(self):
         self.message = "GlycoCT parser, unconnected node count error"
+
+class GlycoCTREPandUNDUnsupported(GlycoCTParseError):
+    def __init__(self):
+        self.message = "GlycoCT parser, REP and UND are both found, not supported yet"
 
 class GlycoCTFormat(GlycanFormatter):
     def __init__(self):
@@ -157,10 +165,10 @@ class GlycoCTFormat(GlycanFormatter):
 
         return (mstr, subdict)
     
-    def toStr(self,g):
+    def toStr(self, g):
 
         g.set_ids()
-        
+
         roots = []
         if g.root():
             roots.append(g.root())
@@ -168,23 +176,62 @@ class GlycoCTFormat(GlycanFormatter):
             if not ur.connected():
                 roots.append(ur)
 
+        rep = {}
+        repind = 1
+
         s = "RES\n"
         for r in roots:
             if len(r.parent_links()) == 0 or r == g.root():
                 for m in g.subtree_nodes(r,subst=True):
-                    s += self.monofmt.toStr(m).strip('!')+"\n"
-        
+                    if isinstance(m, RepeatedUnit):
+                        rep[repind] = m
+                        s += "%sr:r%s\n" % (m.id(), repind)
+                        repind += 1
+                        continue
+                    s += self.monofmt.toStr(m).strip('!') + "\n"
+
         first = True
         linkid = 1
         for r in roots:
             if len(r.parent_links()) == 0 or r == g.root():
-                for l in sorted(g.subtree_links(r,subst=True),key=lambda l: l.child().id()):
+                for l in sorted(g.subtree_links(r, subst=True), key=lambda l: l.child().id()):
                     if first:
                         s += "LIN\n"
                         first = False
                     l.set_id(linkid)
                     linkid += 1
-                    s += self.monofmt.linkToStr(l)+"\n"
+                    s += self.monofmt.linkToStr(l) + "\n"
+
+        if len(rep) > 0:
+            s += "REP\n"
+
+        for repind in sorted(rep.keys()):
+            ru = rep[repind]
+
+            l = ru.repeatlinkage()
+            l.set_parent(ru.loopend())
+            l.set_child(ru.root())
+            l.set_id(repind)
+
+            range_min, range_max = ru.range()
+            if range_min == None:
+                range_min = -1
+            if range_max == None:
+                range_max = -1
+            s += "REP%s=%s-%s\n" % (self.monofmt.linkToStr(l), range_min, range_max)
+            l.unset_id()
+
+            for m in g.subtree_nodes(ru.root(), subst=True):
+                s += self.monofmt.toStr(m).strip('!') + "\n"
+
+            first = True
+            for l in sorted(g.subtree_links(ru.root(), subst=True), key=lambda l: l.child().id()):
+                if first:
+                    s += "LIN\n"
+                    first = False
+                l.set_id(linkid)
+                linkid += 1
+                s += self.monofmt.linkToStr(l) + "\n"
 
         first = True
         undind = 0
@@ -198,135 +245,197 @@ class GlycoCTFormat(GlycanFormatter):
                 s += "UND\n"
                 first = False
             undind += 1
-            s += "UND%s:100.0:100.0\n"%(undind,)
+            s += "UND%s:100.0:100.0\n" % (undind,)
             parentids = set()
             subtreelinkage = set()
             for pl in r.parent_links():
                 parentids.add(pl.parent().id())
-                subtreelinkage.add(self.monofmt.linkToStr(pl,noids=True))
-            s += "ParentIDs:%s\n"%("|".join(map(str,sorted(parentids))),)
+                subtreelinkage.add(self.monofmt.linkToStr(pl, noids=True))
+            s += "ParentIDs:%s\n" % ("|".join(map(str, sorted(parentids))),)
             assert len(subtreelinkage) == 1
-            s += "SubtreeLinkageID1:%s\n"%(subtreelinkage.pop(),)
+            s += "SubtreeLinkageID1:%s\n" % (subtreelinkage.pop(),)
             s += "RES\n"
-            for m in g.subtree_nodes(r,subst=True):
-                s += self.monofmt.toStr(m)+"\n"
+            for m in g.subtree_nodes(r, subst=True):
+                s += self.monofmt.toStr(m) + "\n"
             first1 = True
-            for l in sorted(g.subtree_links(r,subst=True),key=lambda l: l.child().id()):
+            for l in sorted(g.subtree_links(r, subst=True), key=lambda l: l.child().id()):
                 if first1:
                     s += "LIN\n"
                     first1 = False
                 l.set_id(linkid)
                 linkid += 1
-                s += self.monofmt.linkToStr(l)+"\n"
+                s += self.monofmt.linkToStr(l) + "\n"
         return s
 
-    def toGlycan(self,s):
+    def toGlycan(self, s):
         res = {}
         und = defaultdict(dict)
         undind = None
+        rep = defaultdict(dict)
+        repind = None
         state = None
         undets = set()
         seen = set()
-        for lineno,l in enumerate(s.splitlines()):
+        for lineno, l in enumerate(s.splitlines()):
             l = l.strip()
             if not l:
                 continue
             if l == "RES":
-                if l in seen and state != "UND":
-                    raise GlycoCTRepeatedSectionError(lineno=lineno+1,section=l)
+                if l in seen and state not in ["UND", "REP"]:
+                    raise GlycoCTRepeatedSectionError(lineno=lineno + 1, section=l)
                 if state == "UND":
                     state = "UNDRES"
+                elif state == "REP":
+                    state = "REPRES"
                 else:
                     state = "RES"
                 seen.add(state)
                 continue
             if l == "LIN":
-                if l in seen and state != "UNDRES":
-                    raise GlycoCTRepeatedSectionError(lineno=lineno+1,section=l)
+                if l in seen and state not in ["UND", "REP", "REPRES"]:
+                    raise GlycoCTRepeatedSectionError(lineno=lineno + 1, section=l)
                 if "RES" not in seen:
                     raise GlycoCTLINBeforeRESError()
                 if state == "UND":
                     state = "UNDLIN"
+                elif state == "REP":
+                    state = "REPLIN"
                 else:
                     state = "LIN"
                 seen.add(state)
                 continue
+            if l == "REP":
+                if l in seen:
+                    raise GlycoCTRepeatedSectionError(lineno=lineno + 1, section=l)
+                if "RES" not in seen:
+                    raise GlycoCTREPBeforeRESLINError()
+                state = "REP"
+                seen.add(state)
+                continue
             if l == "UND":
                 if l in seen:
-                    raise GlycoCTRepeatedSectionError(lineno=lineno+1,section=l)
+                    raise GlycoCTRepeatedSectionError(lineno=lineno + 1, section=l)
                 if "RES" not in seen or "LIN" not in seen:
                     raise GlycoCTUNDBeforeRESLINError()
                 state = "UND"
                 seen.add(state)
                 continue
-            if re.search(r'^UND\d+:',l):
-                m = re.search(r"^UND(\d+):",l)
+
+            if re.search(r'^REP\d+:.+', l):
+                m = re.search(r"^REP(\d+):(.*)=((-?\d+)-(-?\d+))", l)
+                state = "REP"
+                if m:
+                    repind = int(m.group(1))
+                    linkStr = m.group(2)
+                    repeat_min = int(m.group(4))
+                    repeat_max = int(m.group(5))
+                    link, parentid, childid = self.monofmt.linkFromStr("r:"+linkStr, res)
+                    rep[repind]['repeat_times'] = (repeat_min, repeat_max)
+                    rep[repind]['repeat_link'] = link
+                    rep[repind]['repeat_root'] = childid
+                    rep[repind]['repeat_loopend'] = parentid
+
+                    continue
+
+            if re.search(r'^UND\d+:', l):
+                m = re.search(r"^UND(\d+):", l)
                 state = "UND"
                 if m:
-                    undind = int(m.group(1))    
-                    und[undind]['frac'] = map(float,l.split(':')[1:])
+                    undind = int(m.group(1))
+                    und[undind]['frac'] = map(float, l.split(':')[1:])
                     continue
-            if re.search(r'^[A-Z][A-Z][A-Z]$',l):
-                raise GlycoCTUnsupportedSectionError(lineno=lineno+1,section=l)
-            if state in ("RES","UNDRES"):
-                try:
-                    m = self.monofmt.fromStr(l)
-                except (TypeError,LookupError,ValueError,RuntimeError) as e:
-                    raise GycoCTBadRESLineError(message=e.args[0],lineno=lineno+1,line=l)
+            if re.search(r'^[A-Z][A-Z][A-Z]$', l):
+                raise GlycoCTUnsupportedSectionError(lineno=lineno + 1, section=l)
+            if state in ("RES", "UNDRES", "REPRES"):
+                if re.search(r"^(\d+)r:r(\d+)$", l):
+                    tmp = re.search(r"^(\d+)r:r(\d+)$", l)
+                    nodeind = int(tmp.group(1))
+                    repind = int(tmp.group(2))
+                    m = RepeatedUnit(None, None, None)
+                    m.set_id(nodeind)
+                    rep[repind]["repeat_unit"] = m
+                else:
+                    try:
+                        m = self.monofmt.fromStr(l)
+                    except (TypeError, LookupError, ValueError, RuntimeError) as e:
+                        raise GycoCTBadRESLineError(message=e.args[0], lineno=lineno + 1, line=l)
                 res[m.id()] = m
                 if state == "UNDRES" and undind != None and 'root' not in und[undind]:
                     und[undind]['root'] = m.id()
                     undets.add(m)
+                if state == "REPRES" and repind != None and 'root' not in rep[repind]:
+                    pass
                 continue
-            if state in ("LIN","UNDLIN"):
+            if state in ("LIN", "UNDLIN", "REPLIN"):
                 try:
-                    links = self.monofmt.linkFromStr(l,res)
+                    links = self.monofmt.linkFromStr(l, res)
                     if len(links) > 1:
                         for l in links:
                             l.set_undetermined(True)
                             l.set_instantiated(False)
                             l.child().set_connected(False)
-                except (RuntimeError,AttributeError) as e:
-                    raise GlycoCTBadLINLineError(message=e.args[0],lineno=lineno+1,line=l)      
+                except (RuntimeError, AttributeError) as e:
+                    raise GlycoCTBadLINLineError(message=e.args[0], lineno=lineno + 1, line=l)
                 continue
             if state == "UND":
-                m = re.search(r"^UND(\d+):",l)
+                m = re.search(r"^UND(\d+):", l)
                 if m:
-                    undind = int(m.group(1))    
-                    und[undind]['frac'] = map(float,l.split(':')[1:])
+                    undind = int(m.group(1))
+                    und[undind]['frac'] = map(float, l.split(':')[1:])
                     continue
-                m = re.search(r"^ParentIDs:(\d+(\|\d+)*)$",l)
+                m = re.search(r"^ParentIDs:(\d+(\|\d+)*)$", l)
                 if m:
-                    und[undind]['parentids'] = map(int,m.group(1).split('|'))
+                    und[undind]['parentids'] = map(int, m.group(1).split('|'))
                     continue
-                m = re.search(r"^SubtreeLinkageID(\d+):(.*)$",l)
+                m = re.search(r"^SubtreeLinkageID(\d+):(.*)$", l)
                 if m:
-                    und[undind]['stlink'] = (m.group(1),m.group(2))
+                    und[undind]['stlink'] = (m.group(1), m.group(2))
                     continue
-            raise GlycoCTUnexpectedLineError(lineno=lineno+1,line=l)
+            raise GlycoCTUnexpectedLineError(lineno=lineno + 1, line=l)
+        if len(und) > 0 and len(rep) > 0:
+            raise GlycoCTREPandUNDUnsupported()
         for d in und.values():
             linkagestr = d['stlink'][1]
             rootid = d['root']
             for pid in d['parentids']:
                 try:
-                  links = self.monofmt.linkFromStr("0:%s%s%s%s"%(pid,linkagestr[:-1],rootid,linkagestr[-1]),res)
-                  for l in links:
-                    l.set_undetermined(True)
-                    l.set_instantiated(False)
-                    l.child().set_connected(False)
-                except (RuntimeError,AttributeError) as e:
-                    raise GlycoCTParentLinkError(message=e.args[0],lineno=lineno+1,line=l)      
+                    links = self.monofmt.linkFromStr("0:%s%s%s%s" % (pid, linkagestr[:-1], rootid, linkagestr[-1]), res)
+                    for l in links:
+                        l.set_undetermined(True)
+                        l.set_instantiated(False)
+                        l.child().set_connected(False)
+                except (RuntimeError, AttributeError) as e:
+                    raise GlycoCTParentLinkError(message=e.args[0], lineno=lineno + 1, line=l)
+
+        repeat_roots = set()
+        for repind, rep in rep.items():
+            # print repind, rep
+            repeat_roots.add(res[rep["repeat_root"]])
+            rep["repeat_unit"].setroot(res[rep["repeat_root"]])
+            rep["repeat_unit"].setloopend(res[rep["repeat_loopend"]])
+            rep["repeat_unit"].setrepeatlinkage(rep["repeat_link"])
+            if rep["repeat_times"] != (-1, -1):
+                rep["repeat_unit"].setrange(rep["repeat_times"])
         unconnected = set()
         monocnt = 0
-        for id,r in res.items():
-            if not isinstance(r,Monosaccharide):
+        for id, r in res.items():
+            if isinstance(r, RepeatedUnit):
+                pass
+                # For glycans which contains repeating units, it definitely couldn't be composition
+                # monocnt += len(r) or 1?
+            elif isinstance(r, Monosaccharide):
+                monocnt += 1
+            else:
                 continue
-            monocnt += 1
+
             if len(r.parent_links()) > 0:
                 continue
             r.set_connected(False)
             unconnected.add(r)
-        if len(unconnected) not in (1,monocnt):
+
+
+        unconnected = unconnected - repeat_roots
+        if len(unconnected) not in (1, monocnt):
             raise GlycoCTUnconnectedCountError()
         # single monosacharides are considered a structure, not a composition...
         if len(unconnected) == 1:
